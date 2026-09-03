@@ -67,6 +67,7 @@ export interface Customer {
   address: string
   route_id: string | null
   is_paused: boolean
+  createdAt: string // ISO yyyy-mm-dd — days before this were never "their" day, so the calendar shouldn't show them as present
   subscriptions: Subscription[]
 }
 

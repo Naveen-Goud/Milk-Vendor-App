@@ -68,6 +68,7 @@ export async function fetchTenantData(db: SupabaseClient, vendorId: string): Pro
   const customers: Customer[] = (customersRes.data ?? []).map((c) => ({
     id: c.id, name: c.name, phone: c.phone ?? '', email: c.email ?? '', address: c.address ?? '',
     route_id: c.route_id, is_paused: c.is_paused,
+    createdAt: (c.created_at as string | null)?.slice(0, 10) ?? '1970-01-01',
     subscriptions: (c.customer_subscriptions ?? []).map((s: { product_id: string; default_qty: number }) => ({
       product_id: s.product_id, quantity: Number(s.default_qty),
     })),
@@ -128,7 +129,7 @@ export async function deleteProduct(db: SupabaseClient, id: string): Promise<voi
 
 // ---- Customers ----------------------------------------------------------------
 
-export async function insertCustomer(db: SupabaseClient, vendorId: string, customer: Omit<Customer, 'id'>): Promise<Customer> {
+export async function insertCustomer(db: SupabaseClient, vendorId: string, customer: Omit<Customer, 'id' | 'createdAt'>): Promise<Customer> {
   const res = await db.from('customers').insert({
     vendor_id: vendorId, name: customer.name, phone: customer.phone, email: customer.email,
     address: customer.address, route_id: customer.route_id, is_paused: customer.is_paused,
@@ -142,7 +143,7 @@ export async function insertCustomer(db: SupabaseClient, vendorId: string, custo
     if (subRes.error) throw new Error(subRes.error.message)
   }
 
-  return { ...customer, id: row.id }
+  return { ...customer, id: row.id, createdAt: (row.created_at as string | null)?.slice(0, 10) ?? '1970-01-01' }
 }
 
 export async function updateCustomer(db: SupabaseClient, vendorId: string, id: string, patch: Partial<Customer>): Promise<void> {

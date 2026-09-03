@@ -22,6 +22,11 @@ export function resolveDay(
 ): DayResolution {
   if (customer.is_paused) return { status: 'inactive', items: [] }
 
+  // Before they were ever a customer, there's nothing to resolve — without
+  // this check, every day in history defaults to "delivered" for a
+  // brand-new customer, which is wrong (and confusing on the calendar).
+  if (date < customer.createdAt) return { status: 'inactive', items: [] }
+
   const exception = exceptions.find((e) => e.customer_id === customer.id && e.date === date)
   if (exception) {
     return { status: exception.status, items: exception.items }

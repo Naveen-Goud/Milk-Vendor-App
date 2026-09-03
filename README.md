@@ -75,6 +75,43 @@ supabase functions deploy manage-delivery-boy
 injected into every Edge Function automatically by Supabase — you don't
 need to set these as secrets yourself.
 
+### 3b. Set up real email sending for bills
+Bills are actually emailed now (not just marked "sent") via
+[Resend](https://resend.com) — free tier is plenty for a small vendor.
+
+1. Create a free Resend account and grab an API key.
+2. (Recommended for real vendors, optional for testing) [Verify a sending
+   domain](https://resend.com/domains) — until you do, Resend's sandbox
+   sender only delivers to your own Resend account's email address.
+3. Set the secrets and deploy:
+   ```bash
+   supabase secrets set RESEND_API_KEY=re_xxxxxxxx
+   supabase secrets set RESEND_FROM_EMAIL="billing@yourdomain.com"
+   supabase functions deploy send-invoice-email
+   ```
+4. **On-demand sending** (Billing screen → "Generate & email" / "Resend")
+   works as soon as this is deployed — no further setup needed.
+5. **Automatic monthly billing** is optional — see below.
+
+### Automating monthly billing (optional)
+Generates and emails last month's bills for every vendor's customers
+automatically, on a schedule, with no one needing to click anything.
+
+1. ```bash
+   supabase secrets set CRON_SECRET=$(openssl rand -hex 24)
+   supabase functions deploy monthly-billing-run --no-verify-jwt
+   ```
+2. Supabase dashboard → **Database → Extensions** → enable both `pg_cron`
+   and `pg_net`.
+3. In the SQL editor, uncomment and run the `cron.schedule(...)` block at
+   the bottom of `supabase/schema.sql` — fill in your project ref and the
+   same `CRON_SECRET` from step 1.
+4. Verify: `select * from cron.job;`
+
+Runs at 3 AM UTC on the 1st of every month; skips customers who already
+have an invoice for that period or had nothing delivered; leaves anyone
+without an email as a draft invoice for the vendor to send manually.
+
 ### 4. Configure environment variables
 ```bash
 cp .env.example .env
@@ -154,12 +191,45 @@ static total), each customer has a running billed/paid/pending ledger with
 a "Record payment" action, and Dashboard → Analytics shows daily revenue,
 revenue by product, top customers, attendance rate, and outstanding dues.
 
+## Email billing
+
+Bills are genuinely emailed via Resend now — not just marked "sent."
+On-demand sending happens from the Billing screen; a customer with an
+email on file gets a real itemized HTML email when you tap "Generate &
+email" or "Resend." Customers without an email fall back to the old
+status-flip behavior for now (WhatsApp/SMS sending isn't wired to a real
+provider yet — see limitations below).
+
+Optional automated monthly billing is available too (see setup above) — a
+scheduled job that generates and emails last month's bills for every
+customer with nothing extra to click, skipping anyone already invoiced for
+that period.
+
+## Confirmed fixed (found via real device testing)
+
+- The `vendors` table RLS policy that silently blocked delivery boys from
+  loading their own vendor's data (fixed: now uses `current_vendor_id()`
+  instead of `auth.uid()` for reads).
+- Milk stock numbers not aligning under their column headers (fixed: header
+  and rows now share one grid template instead of independently-hidden
+  zero values shifting columns out of sync).
+- The attendance calendar showing every day as "present" going back through
+  history for a customer who was only just added (fixed: `resolveDay()`
+  now checks the customer's actual creation date and shows those days as
+  blank/inactive instead).
+
 ## Known limitations — read before relying on this in production
 
-- **Not tested against a live database.** Typecheck/build/lint pass; the
-  actual auth flows, RLS policies, and Edge Function have not been
-  exercised against a real Supabase project. Test the sign-up → add
-  delivery boy → delivery boy login path end-to-end yourself before trusting it.
+- **The newest changes (route-analytics expansion, today's-status
+  drill-down, real email sending, monthly cron) have not been tested
+  against a live database yet** — typecheck/build/lint pass, but that's
+  static analysis, not a substitute for clicking through it. The email
+  Edge Functions in particular are worth testing carefully: try an
+  on-demand send first before trusting the monthly cron job with real
+  vendor data.
+- **Resend's sandbox sender only delivers to your own Resend account
+  email** until you verify a sending domain — if a real customer's email
+  isn't receiving bills, check whether you've verified a domain yet.
 - **Product pricing is technically readable by delivery boys via direct
   API calls.** The app's UI never shows them price, and route guards keep
   them off the Billing/Products screens — but that's client-side. The
@@ -184,3 +254,6 @@ revenue by product, top customers, attendance rate, and outstanding dues.
 - **`lookup_vendor_by_code`** SQL function exists in the schema (for a
   future "show business name before login" UX nicety) but isn't called by
   the app yet.
+- **WhatsApp/SMS bill sending** still just flips the invoice status without
+  actually sending anything — only email is real. See the original plan's
+  cost comparison if you want to add the WhatsApp Cloud API next.

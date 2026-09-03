@@ -15,6 +15,7 @@ import DeliveryBoys from './pages/DeliveryBoys'
 import Settings from './pages/Settings'
 import Profile from './pages/Profile'
 import Analytics from './pages/Analytics'
+import TodayStatus from './pages/TodayStatus'
 import type { Role } from './types'
 
 // HashRouter is used deliberately: GitHub Pages serves static files with no
@@ -95,6 +96,7 @@ function Shell() {
         <Route path="/delivery-log" element={<RequireAuth roles={['vendor', 'delivery_boy']}><DeliveryLog /></RequireAuth>} />
         <Route path="/billing" element={<RequireAuth roles={['vendor']}><Billing /></RequireAuth>} />
         <Route path="/analytics" element={<RequireAuth roles={['vendor']}><Analytics /></RequireAuth>} />
+        <Route path="/today-status" element={<RequireAuth roles={['vendor']}><TodayStatus /></RequireAuth>} />
         <Route path="/manage" element={<RequireAuth roles={['vendor']}><Manage /></RequireAuth>} />
         <Route path="/customers" element={<RequireAuth roles={['vendor']}><Customers /></RequireAuth>} />
         <Route path="/customers/:id/attendance" element={<RequireAuth roles={['vendor']}><CustomerAttendance /></RequireAuth>} />

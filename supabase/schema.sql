@@ -196,10 +196,13 @@ alter table public.invoices enable row level security;
 alter table public.payments enable row level security;
 alter table public.notification_logs enable row level security;
 
--- vendors: an owner can read/update only their own row. Insert happens via
--- the Onboarding sign-up flow (the new user's own id), so allow insert
--- where id = auth.uid(). No one can read another vendor's row.
-create policy "vendor reads own row" on public.vendors for select using (id = auth.uid());
+-- vendors: SELECT uses current_vendor_id() (not auth.uid()) so BOTH the
+-- vendor owner AND their delivery boys can read the vendor row — a
+-- delivery boy's own auth.uid() is their own account id, not the vendor's.
+-- UPDATE/INSERT stay restricted to id = auth.uid() (owner only): only the
+-- actual vendor should change business settings, and the insert check is
+-- what lets a new vendor create their own row during sign-up.
+create policy "tenant reads own vendor row" on public.vendors for select using (id = public.current_vendor_id());
 create policy "vendor updates own row" on public.vendors for update using (id = auth.uid());
 create policy "new vendor can insert own row" on public.vendors for insert with check (id = auth.uid());
 
@@ -309,3 +312,35 @@ create or replace function public.lookup_vendor_by_code(code text)
 returns table (id uuid, business_name text) as $$
   select id, business_name from public.vendors where vendor_code = upper(code);
 $$ language sql stable security definer;
+
+-- ============================================================================
+-- OPTIONAL: monthly automated billing
+-- Do NOT run this block until:
+--   1. You've deployed the monthly-billing-run Edge Function
+--      (supabase functions deploy monthly-billing-run --no-verify-jwt)
+--   2. You've set its CRON_SECRET secret and have that same value ready
+--      to paste below in place of 'YOUR_CRON_SECRET_HERE'
+--   3. You've replaced YOUR_PROJECT_REF in the URL below with your actual
+--      project ref (from your Project URL, https://YOUR_PROJECT_REF.supabase.co)
+--
+-- This schedules the function to run at 3:00 AM UTC on the 1st of every
+-- month, which generates and emails last month's bills for every vendor's
+-- customers who don't already have one for that period. Requires the
+-- pg_cron and pg_net extensions — enable both first under
+-- Database -> Extensions in the Supabase dashboard.
+-- ============================================================================
+
+-- select cron.schedule(
+--   'monthly-billing-run',
+--   '0 3 1 * *',
+--   $$
+--   select net.http_post(
+--     url := 'https://YOUR_PROJECT_REF.supabase.co/functions/v1/monthly-billing-run',
+--     headers := jsonb_build_object('Authorization', 'Bearer YOUR_CRON_SECRET_HERE', 'Content-Type', 'application/json'),
+--     body := '{}'::jsonb
+--   );
+--   $$
+-- );
+
+-- To check it's scheduled: select * from cron.job;
+-- To remove it later: select cron.unschedule('monthly-billing-run');

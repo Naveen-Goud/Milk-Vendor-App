@@ -33,6 +33,19 @@ interface FinishSetupInput { businessName: string; ownerName: string; phone: str
 interface VendorLoginInput { email: string; password: string }
 interface DeliveryBoyLoginInput { vendorCode: string; phone: string; pin: string }
 
+export interface SendInvoiceEmailInput {
+  toEmail: string
+  customerName: string
+  periodLabel: string
+  periodStart: string
+  periodEnd: string
+  lineItems: { label: string; tag: string; unit: string; rate: number; regularQty: number; regularAmount: number; extraQty: number; extraAmount: number }[]
+  deliveryCharge: number
+  skippedDays: number
+  subtotal: number
+  total: number
+}
+
 interface AppContextValue extends TenantData {
   authStatus: AuthStatus
   currentUser: CurrentUser | null
@@ -57,13 +70,14 @@ interface AppContextValue extends TenantData {
   addDeliveryBoy: (input: DeliveryBoyFormInput) => Promise<void>
   updateDeliveryBoy: (id: string, input: DeliveryBoyFormInput) => Promise<void>
   deleteDeliveryBoy: (id: string) => Promise<void>
-  addCustomer: (customer: Omit<Customer, 'id' | 'is_paused' | 'subscriptions'> & Partial<Pick<Customer, 'is_paused' | 'subscriptions'>>) => Promise<void>
+  addCustomer: (customer: Omit<Customer, 'id' | 'is_paused' | 'subscriptions' | 'createdAt'> & Partial<Pick<Customer, 'is_paused' | 'subscriptions'>>) => Promise<void>
   updateCustomer: (id: string, patch: Partial<Customer>) => Promise<void>
   deleteCustomer: (id: string) => Promise<void>
   markAbsent: (customerId: string, date: string) => Promise<void>
   modifyDelivery: (customerId: string, date: string, items: DeliveryItem[]) => Promise<void>
   undoException: (customerId: string, date: string) => Promise<void>
   markInvoiceSent: (id: string, channel: NonNullable<Invoice['sent_via']>) => Promise<void>
+  sendInvoiceEmail: (id: string, payload: SendInvoiceEmailInput) => Promise<void>
   markInvoicePaid: (id: string) => Promise<void>
   addPayment: (customerId: string, amount: number, method: PaymentMethod, note?: string) => Promise<void>
 }
@@ -306,10 +320,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [requireDb, refreshTenant, showToast])
 
   // ---- Customers -------------------------------------------------------------
-  const addCustomer = useCallback(async (customer: Omit<Customer, 'id' | 'is_paused' | 'subscriptions'> & Partial<Pick<Customer, 'is_paused' | 'subscriptions'>>) => {
+  const addCustomer = useCallback(async (customer: Omit<Customer, 'id' | 'is_paused' | 'subscriptions' | 'createdAt'> & Partial<Pick<Customer, 'is_paused' | 'subscriptions'>>) => {
     const client = requireDb()
     if (!currentUser) return
-    const full: Omit<Customer, 'id'> = { is_paused: false, subscriptions: [], ...customer }
+    const full: Omit<Customer, 'id' | 'createdAt'> = { is_paused: false, subscriptions: [], ...customer }
     const created = await db.insertCustomer(client, currentUser.vendorId, full)
     setTenant((t) => ({ ...t, customers: [...t.customers, created] }))
     showToast('Customer added')
@@ -377,6 +391,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
     showToast(`Invoice sent via ${channel}`)
   }, [requireDb, showToast])
 
+  // Actually sends the bill by email via the send-invoice-email Edge
+  // Function (Resend), then only marks the invoice "sent" once the email
+  // genuinely went out. Whatsapp/SMS aren't wired to a real provider yet —
+  // see markInvoiceSent above, which still just flips the status flag for
+  // those channels (see README "Known limitations").
+  const sendInvoiceEmailFn = useCallback(async (id: string, payload: SendInvoiceEmailInput) => {
+    const client = requireDb()
+    const { data, error } = await client.functions.invoke('send-invoice-email', {
+      body: { invoiceId: id, ...payload },
+    })
+    if (error) throw new Error(error.message)
+    if (data?.error) throw new Error(data.error)
+    const sent_at = new Date().toISOString()
+    await db.updateInvoiceStatus(client, id, { status: 'sent', sent_via: 'email', sent_at })
+    setTenant((t) => ({ ...t, invoices: t.invoices.map((inv) => (inv.id === id ? { ...inv, status: 'sent', sent_via: 'email', sent_at } : inv)) }))
+    showToast(`Bill emailed to ${payload.toEmail}`)
+  }, [requireDb, showToast])
+
   const markInvoicePaid = useCallback(async (id: string) => {
     const client = requireDb()
     await db.updateInvoiceStatus(client, id, { status: 'paid' })
@@ -402,11 +434,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     addDeliveryBoy, updateDeliveryBoy, deleteDeliveryBoy,
     addCustomer, updateCustomer: updateCustomerFn, deleteCustomer: deleteCustomerFn,
     markAbsent, modifyDelivery, undoException,
-    markInvoiceSent, markInvoicePaid, addPayment,
+    markInvoiceSent, sendInvoiceEmail: sendInvoiceEmailFn, markInvoicePaid, addPayment,
   }), [tenant, authStatus, currentUser, vendor, toast, signUpVendor, finishVendorSetup, signInVendor, signInDeliveryBoy,
       logout, changePassword, updateVendorFn, addCompany, deleteCompanyFn, addProduct, updateProductFn, deleteProductFn,
       addDeliveryBoy, updateDeliveryBoy, deleteDeliveryBoy, addCustomer, updateCustomerFn, deleteCustomerFn,
-      markAbsent, modifyDelivery, undoException, markInvoiceSent, markInvoicePaid, addPayment])
+      markAbsent, modifyDelivery, undoException, markInvoiceSent, sendInvoiceEmailFn, markInvoicePaid, addPayment])
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>
 }

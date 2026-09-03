@@ -5,7 +5,7 @@ import { computeInvoice } from '../lib/billing'
 import { PageContainer } from '../components/templates/PageContainer'
 import { Sheet } from '../components/organisms/Sheet'
 import { Badge } from '../components/atoms/Badge'
-import type { ComputedInvoice, Customer, Invoice, NotificationChannel } from '../types'
+import type { ComputedInvoice, Customer, Invoice } from '../types'
 
 const statusTone = { paid: 'fresh', sent: 'crate', draft: 'amber' } as const
 
@@ -25,9 +25,10 @@ interface ComputedRow {
 }
 
 export default function Billing() {
-  const { invoices, customers, products, companies, vendor, exceptions, today, markInvoiceSent, markInvoicePaid } = useApp()
+  const { invoices, customers, products, companies, vendor, exceptions, today, markInvoiceSent, sendInvoiceEmail, markInvoicePaid } = useApp()
   const [period, setPeriod] = useState<PeriodKey>('monthly')
   const [viewing, setViewing] = useState<string | null>(null)
+  const [sendingId, setSendingId] = useState<string | null>(null)
 
   const { start, end } = PERIODS[period]
 
@@ -52,11 +53,38 @@ export default function Billing() {
   const pendingCount = invoices.filter((i) => i.status === 'draft').length
   const viewingRow = computed.find((c) => c.invoice.id === viewing)
 
+  async function sendBill(row: ComputedRow) {
+    setSendingId(row.invoice.id)
+    try {
+      if (row.customer.email) {
+        await sendInvoiceEmail(row.invoice.id, {
+          toEmail: row.customer.email,
+          customerName: row.customer.name,
+          periodLabel: PERIODS[period].label,
+          periodStart: row.bill.periodStart,
+          periodEnd: row.bill.periodEnd,
+          lineItems: row.bill.lineItems,
+          deliveryCharge: row.bill.deliveryCharge,
+          skippedDays: row.bill.skippedDays,
+          subtotal: row.bill.subtotal,
+          total: row.bill.total,
+        })
+      } else {
+        // No email on file — WhatsApp/SMS sending isn't wired to a real
+        // provider yet, so this still just marks the invoice sent. See
+        // README "Known limitations".
+        await markInvoiceSent(row.invoice.id, 'whatsapp')
+      }
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : 'Could not send the bill')
+    } finally {
+      setSendingId(null)
+    }
+  }
+
   async function sendAllPending() {
-    const drafts = invoices.filter((i) => i.status === 'draft')
-    for (const inv of drafts) {
-      const customer = customers.find((c) => c.id === inv.customer_id)
-      await markInvoiceSent(inv.id, customer?.email ? 'email' : 'whatsapp')
+    for (const row of computed) {
+      if (row.invoice.status === 'draft') await sendBill(row)
     }
   }
 
@@ -85,8 +113,10 @@ export default function Billing() {
         </p>
       ) : (
         <div className="space-y-3">
-          {computed.map(({ invoice: inv, customer, bill }) => {
+          {computed.map((row) => {
+            const { invoice: inv, customer, bill } = row
             const Icon = inv.sent_via ? channelIcon[inv.sent_via] : null
+            const busy = sendingId === inv.id
             return (
               <div key={inv.id} className="rounded-2xl border border-crate-100 bg-white p-4">
                 <div className="flex items-start justify-between">
@@ -107,16 +137,17 @@ export default function Billing() {
                   </button>
                   {inv.status === 'draft' && (
                     <button
-                      onClick={() => markInvoiceSent(inv.id, (customer.email ? 'email' : 'whatsapp') as NotificationChannel)}
-                      className="flex-1 rounded-xl bg-crate-500 py-2.5 text-sm font-semibold text-white active:bg-crate-600"
+                      onClick={() => sendBill(row)}
+                      disabled={busy}
+                      className="flex-1 rounded-xl bg-crate-500 py-2.5 text-sm font-semibold text-white active:bg-crate-600 disabled:opacity-60"
                     >
-                      Generate & send
+                      {busy ? 'Sending…' : customer.email ? 'Generate & email' : 'Generate & send'}
                     </button>
                   )}
                   {inv.status === 'sent' && (
                     <>
-                      <button onClick={() => markInvoiceSent(inv.id, (inv.sent_via ?? 'email') as NotificationChannel)} className="flex-1 rounded-xl bg-crate-500 py-2.5 text-sm font-semibold text-white active:bg-crate-600">
-                        Resend
+                      <button onClick={() => sendBill(row)} disabled={busy} className="flex-1 rounded-xl bg-crate-500 py-2.5 text-sm font-semibold text-white active:bg-crate-600 disabled:opacity-60">
+                        {busy ? 'Sending…' : 'Resend'}
                       </button>
                       <button onClick={() => markInvoicePaid(inv.id)} className="flex-1 rounded-xl bg-fresh-500 py-2.5 text-sm font-semibold text-white active:bg-fresh-600">
                         Mark paid
