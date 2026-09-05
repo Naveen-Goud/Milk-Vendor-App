@@ -1,37 +1,39 @@
 import { Fragment, useMemo, useState } from 'react'
-import { Mail, MessageCircle, FileText, Truck, Scissors } from 'lucide-react'
+import { Mail, MessageCircle, FileText, Truck, Scissors, Plus } from 'lucide-react'
 import { useApp } from '../context/AppContext'
 import { computeInvoice } from '../lib/billing'
+import { getCurrentMonthRange, labelForPeriod } from '../lib/attendance'
 import { PageContainer } from '../components/templates/PageContainer'
 import { Sheet } from '../components/organisms/Sheet'
 import { Badge } from '../components/atoms/Badge'
+import { BackButton } from '../components/atoms/BackButton'
 import type { ComputedInvoice, Customer, Invoice } from '../types'
 
 const statusTone = { paid: 'fresh', sent: 'crate', draft: 'amber' } as const
-
 const channelIcon = { email: Mail, whatsapp: MessageCircle, sms: Mail }
-
-const PERIODS = {
-  monthly: { label: 'Monthly', start: '2026-07-01', end: '2026-07-31' },
-  weekly: { label: 'Weekly', start: '2026-07-25', end: '2026-07-31' },
-} as const
-
-type PeriodKey = keyof typeof PERIODS
 
 interface ComputedRow {
   invoice: Invoice
   customer: Customer
   bill: ComputedInvoice
+  periodLabel: string
 }
 
 export default function Billing() {
-  const { invoices, customers, products, companies, vendor, exceptions, today, markInvoiceSent, sendInvoiceEmail, markInvoicePaid } = useApp()
-  const [period, setPeriod] = useState<PeriodKey>('monthly')
+  const {
+    invoices, customers, products, companies, vendor, exceptions, today,
+    markInvoiceSent, sendInvoiceEmail, markInvoicePaid, generateInvoicesForPeriod,
+  } = useApp()
   const [viewing, setViewing] = useState<string | null>(null)
   const [sendingId, setSendingId] = useState<string | null>(null)
+  const [generating, setGenerating] = useState(false)
 
-  const { start, end } = PERIODS[period]
+  const currentMonth = useMemo(() => getCurrentMonthRange(today), [today])
 
+  // Each invoice is computed using ITS OWN stored period, never a shared
+  // hardcoded range — this is what makes the totals correct regardless of
+  // when the invoice was actually generated (last month via the scheduled
+  // job, this month via the button below, or any other period).
   const computed = useMemo<ComputedRow[]>(() => {
     return invoices
       .map((inv) => {
@@ -39,19 +41,32 @@ export default function Billing() {
         if (!customer) return null
         const bill = computeInvoice({
           customer, exceptions, products, companies,
-          periodStart: start, periodEnd: end,
+          periodStart: inv.period_start, periodEnd: inv.period_end,
           deliveryCharge: vendor?.deliveryCharge || 0,
           todayISO: today,
         })
-        return { invoice: inv, customer, bill }
+        return { invoice: inv, customer, bill, periodLabel: labelForPeriod(inv.period_start, inv.period_end) }
       })
       .filter((row): row is ComputedRow => row !== null)
-  }, [invoices, customers, exceptions, products, companies, start, end, vendor, today])
+      .sort((a, b) => b.invoice.period_end.localeCompare(a.invoice.period_end) || a.customer.name.localeCompare(b.customer.name))
+  }, [invoices, customers, exceptions, products, companies, vendor, today])
 
   if (!vendor) return null
 
+  const hasThisMonth = invoices.some((i) => i.period_start === currentMonth.start && i.period_end === currentMonth.end)
   const pendingCount = invoices.filter((i) => i.status === 'draft').length
   const viewingRow = computed.find((c) => c.invoice.id === viewing)
+
+  async function handleGenerateThisMonth() {
+    setGenerating(true)
+    try {
+      await generateInvoicesForPeriod(currentMonth.start, currentMonth.end)
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : 'Could not generate invoices')
+    } finally {
+      setGenerating(false)
+    }
+  }
 
   async function sendBill(row: ComputedRow) {
     setSendingId(row.invoice.id)
@@ -60,7 +75,7 @@ export default function Billing() {
         await sendInvoiceEmail(row.invoice.id, {
           toEmail: row.customer.email,
           customerName: row.customer.name,
-          periodLabel: PERIODS[period].label,
+          periodLabel: row.periodLabel,
           periodStart: row.bill.periodStart,
           periodEnd: row.bill.periodEnd,
           lineItems: row.bill.lineItems,
@@ -90,31 +105,32 @@ export default function Billing() {
 
   return (
     <PageContainer>
-      <header className="mb-4">
-        <p className="text-sm font-medium text-ink-600">{PERIODS[period].label} billing</p>
-        <h1 className="font-display text-2xl font-extrabold text-ink-900">Billing</h1>
+      <header className="mb-4 flex items-center gap-3">
+        <BackButton to="/" />
+        <div>
+          <p className="text-sm font-medium text-ink-600">{currentMonth.label}</p>
+          <h1 className="font-display text-2xl font-extrabold text-ink-900">Billing</h1>
+        </div>
       </header>
 
-      <div className="mb-5 inline-flex rounded-full bg-crate-50 p-1">
-        {(Object.entries(PERIODS) as [PeriodKey, typeof PERIODS[PeriodKey]][]).map(([key, p]) => (
-          <button
-            key={key}
-            onClick={() => setPeriod(key)}
-            className={`rounded-full px-4 py-1.5 text-sm font-semibold transition-colors ${period === key ? 'bg-white text-crate-700 shadow-sm' : 'text-ink-600'}`}
-          >
-            {p.label}
-          </button>
-        ))}
-      </div>
+      {!hasThisMonth && (
+        <button
+          onClick={handleGenerateThisMonth}
+          disabled={generating}
+          className="mb-5 flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-crate-200 bg-crate-50 py-3 text-sm font-semibold text-crate-700 disabled:opacity-60"
+        >
+          <Plus size={16} /> {generating ? 'Generating…' : `Generate ${currentMonth.label} bills`}
+        </button>
+      )}
 
       {computed.length === 0 ? (
         <p className="rounded-2xl border border-dashed border-crate-100 bg-white p-6 text-center text-sm text-ink-600">
-          No invoices yet. They'll appear here once you generate billing for a period.
+          No invoices yet. Generate {currentMonth.label}'s bills above to get started.
         </p>
       ) : (
         <div className="space-y-3">
           {computed.map((row) => {
-            const { invoice: inv, customer, bill } = row
+            const { invoice: inv, customer, bill, periodLabel } = row
             const Icon = inv.sent_via ? channelIcon[inv.sent_via] : null
             const busy = sendingId === inv.id
             return (
@@ -122,6 +138,7 @@ export default function Billing() {
                 <div className="flex items-start justify-between">
                   <div>
                     <p className="font-display font-bold text-ink-900">{customer.name}</p>
+                    <p className="text-xs font-semibold text-crate-600">{periodLabel}</p>
                     <p className="mt-1 font-mono text-lg font-semibold text-ink-900">₹{bill.total.toLocaleString('en-IN')}</p>
                     <p className="text-xs text-ink-600">{bill.deliveredDays} days delivered · {bill.skippedDays} skipped</p>
                   </div>
@@ -172,14 +189,14 @@ export default function Billing() {
       )}
 
       <Sheet open={!!viewingRow} title="Itemized bill" onClose={() => setViewing(null)}>
-        {viewingRow && <InvoiceDetail row={viewingRow} periodLabel={PERIODS[period].label} />}
+        {viewingRow && <InvoiceDetail row={viewingRow} />}
       </Sheet>
     </PageContainer>
   )
 }
 
-function InvoiceDetail({ row, periodLabel }: { row: ComputedRow; periodLabel: string }) {
-  const { customer, bill, invoice } = row
+function InvoiceDetail({ row }: { row: ComputedRow }) {
+  const { customer, bill, invoice, periodLabel } = row
   return (
     <div>
       <div className="mb-4 rounded-xl bg-crate-50 p-3.5">

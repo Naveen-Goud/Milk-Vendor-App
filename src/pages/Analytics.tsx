@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { TrendingUp, Users, PackageSearch, AlertCircle } from 'lucide-react'
 import { useApp } from '../context/AppContext'
 import { getDailyRevenue, getProductRevenue, getAttendanceStats, getOutstandingTotal, getTopCustomers } from '../lib/analytics'
@@ -6,13 +6,13 @@ import { PageContainer } from '../components/templates/PageContainer'
 import { StatCard } from '../components/molecules/StatCard'
 import { TrendBars } from '../components/molecules/TrendBars'
 import { RankedBarList } from '../components/molecules/RankedBarList'
+import { getCurrentMonthRange } from '../lib/attendance'
 import { IconCircle } from '../components/atoms/IconCircle'
-
-const PERIOD = { start: '2026-07-01', end: '2026-07-31', label: 'July 2026' }
+import { BackButton } from '../components/atoms/BackButton'
 
 export default function Analytics() {
   const { customers, exceptions, products, companies, invoices, payments, vendor, today } = useApp()
-  const [range] = useState(PERIOD)
+  const range = useMemo(() => getCurrentMonthRange(today), [today])
 
   const dailyRevenue = useMemo(
     () => getDailyRevenue(customers, exceptions, products, range.start, range.end, today),
@@ -41,9 +41,12 @@ export default function Analytics() {
 
   return (
     <PageContainer>
-      <header className="mb-5">
-        <p className="text-sm font-medium text-ink-600">{range.label}</p>
-        <h1 className="font-display text-2xl font-extrabold text-ink-900">Analytics</h1>
+      <header className="mb-5 flex items-center gap-3">
+        <BackButton to="/" />
+        <div>
+          <p className="text-sm font-medium text-ink-600">{range.label}</p>
+          <h1 className="font-display text-2xl font-extrabold text-ink-900">Analytics</h1>
+        </div>
       </header>
 
       <section className="grid grid-cols-2 gap-3">

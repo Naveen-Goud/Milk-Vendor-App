@@ -80,6 +80,7 @@ interface AppContextValue extends TenantData {
   sendInvoiceEmail: (id: string, payload: SendInvoiceEmailInput) => Promise<void>
   markInvoicePaid: (id: string) => Promise<void>
   addPayment: (customerId: string, amount: number, method: PaymentMethod, note?: string) => Promise<void>
+  generateInvoicesForPeriod: (periodStart: string, periodEnd: string) => Promise<number>
 }
 
 const AppContext = createContext<AppContextValue | null>(null)
@@ -424,6 +425,36 @@ export function AppProvider({ children }: { children: ReactNode }) {
     showToast(`Payment of ₹${amount} recorded`)
   }, [requireDb, currentUser, showToast])
 
+  // Creates a draft invoice for the given period for every active customer
+  // who has a subscription and doesn't already have one for that exact
+  // period — this is the on-demand equivalent of what the scheduled
+  // monthly-billing-run Edge Function does automatically, but lets the
+  // vendor generate bills for the CURRENT period right now instead of
+  // waiting for next month's cron run.
+  const generateInvoicesForPeriod = useCallback(async (periodStart: string, periodEnd: string) => {
+    const client = requireDb()
+    if (!currentUser) return 0
+    const existing = new Set(
+      tenant.invoices.filter((i) => i.period_start === periodStart && i.period_end === periodEnd).map((i) => i.customer_id)
+    )
+    const eligible = tenant.customers.filter((c) => !c.is_paused && c.subscriptions.length > 0 && !existing.has(c.id))
+    const created: Invoice[] = []
+    for (const c of eligible) {
+      try {
+        created.push(await db.insertInvoice(client, currentUser.vendorId, c.id, periodStart, periodEnd))
+      } catch {
+        // one customer failing shouldn't block the rest — they can be retried individually later
+      }
+    }
+    if (created.length > 0) {
+      setTenant((t) => ({ ...t, invoices: [...t.invoices, ...created] }))
+      showToast(`Generated ${created.length} invoice${created.length > 1 ? 's' : ''}`)
+    } else {
+      showToast('Everyone already has an invoice for this period')
+    }
+    return created.length
+  }, [requireDb, currentUser, tenant.invoices, tenant.customers, showToast])
+
   const value = useMemo<AppContextValue>(() => ({
     ...tenant,
     authStatus, currentUser, vendor, toast, today: TODAY, configured: !!supabase,
@@ -434,11 +465,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     addDeliveryBoy, updateDeliveryBoy, deleteDeliveryBoy,
     addCustomer, updateCustomer: updateCustomerFn, deleteCustomer: deleteCustomerFn,
     markAbsent, modifyDelivery, undoException,
-    markInvoiceSent, sendInvoiceEmail: sendInvoiceEmailFn, markInvoicePaid, addPayment,
+    markInvoiceSent, sendInvoiceEmail: sendInvoiceEmailFn, markInvoicePaid, addPayment, generateInvoicesForPeriod,
   }), [tenant, authStatus, currentUser, vendor, toast, signUpVendor, finishVendorSetup, signInVendor, signInDeliveryBoy,
       logout, changePassword, updateVendorFn, addCompany, deleteCompanyFn, addProduct, updateProductFn, deleteProductFn,
       addDeliveryBoy, updateDeliveryBoy, deleteDeliveryBoy, addCustomer, updateCustomerFn, deleteCustomerFn,
-      markAbsent, modifyDelivery, undoException, markInvoiceSent, sendInvoiceEmailFn, markInvoicePaid, addPayment])
+      markAbsent, modifyDelivery, undoException, markInvoiceSent, sendInvoiceEmailFn, markInvoicePaid, addPayment, generateInvoicesForPeriod])
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>
 }
