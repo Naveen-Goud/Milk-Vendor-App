@@ -48,7 +48,7 @@ export default function CustomerAttendance() {
   }
 
   const dayDetail = selectedDate ? resolveDay(customer, selectedDate, exceptions, products, today) : null
-  const [defaultYear, defaultMonth] = (customer.subscriptions.length > 0 ? '2026-07' : today.slice(0, 7)).split('-').map(Number)
+  const [defaultYear, defaultMonth] = today.slice(0, 7).split('-').map(Number)
 
   return (
     <PageContainer>

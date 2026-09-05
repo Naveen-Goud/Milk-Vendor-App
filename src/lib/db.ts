@@ -199,6 +199,16 @@ export async function deleteException(db: SupabaseClient, customerId: string, da
 
 // ---- Invoices & payments -----------------------------------------------------------
 
+export async function insertInvoice(
+  db: SupabaseClient, vendorId: string, customerId: string, periodStart: string, periodEnd: string
+): Promise<Invoice> {
+  const res = await db.from('invoices').insert({
+    vendor_id: vendorId, customer_id: customerId, period_start: periodStart, period_end: periodEnd, status: 'draft',
+  }).select().single()
+  const row = unwrap(res)
+  return { id: row.id, customer_id: customerId, period_start: periodStart, period_end: periodEnd, status: 'draft', sent_via: null, sent_at: null }
+}
+
 export async function updateInvoiceStatus(
   db: SupabaseClient, id: string, patch: { status: Invoice['status']; sent_via?: Invoice['sent_via']; sent_at?: string | null }
 ): Promise<void> {

@@ -8,6 +8,7 @@ import { TextInput } from '../components/atoms/Inputs'
 import { PrimaryButton, DangerLink } from '../components/atoms/Button'
 import { Badge } from '../components/atoms/Badge'
 import { IconCircle } from '../components/atoms/IconCircle'
+import { BackButton } from '../components/atoms/BackButton'
 import type { DeliveryBoy } from '../types'
 
 interface BoyForm { name: string; phone: string; routeName: string; pin: string }
@@ -61,7 +62,10 @@ export default function DeliveryBoys() {
   return (
     <PageContainer>
       <header className="mb-5 flex items-center justify-between">
-        <h1 className="font-display text-2xl font-extrabold text-ink-900">Delivery Boys</h1>
+        <div className="flex items-center gap-3">
+          <BackButton to="/manage" />
+          <h1 className="font-display text-2xl font-extrabold text-ink-900">Delivery Boys</h1>
+        </div>
         <button onClick={openAdd} className="flex items-center gap-1.5 rounded-full bg-crate-500 px-3.5 py-2 text-sm font-semibold text-white active:bg-crate-600">
           <Plus size={16} /> Add
         </button>

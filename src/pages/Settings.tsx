@@ -6,6 +6,7 @@ import { FormField } from '../components/molecules/FormField'
 import { TextInput } from '../components/atoms/Inputs'
 import { PrimaryButton } from '../components/atoms/Button'
 import { IconCircle } from '../components/atoms/IconCircle'
+import { BackButton } from '../components/atoms/BackButton'
 
 export default function Settings() {
   const { vendor, updateVendor, changePassword } = useApp()
@@ -42,7 +43,8 @@ export default function Settings() {
 
   return (
     <PageContainer>
-      <header className="mb-5">
+      <header className="mb-5 flex items-center gap-3">
+        <BackButton to="/manage" />
         <h1 className="font-display text-2xl font-extrabold text-ink-900">Settings</h1>
       </header>
 

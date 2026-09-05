@@ -8,6 +8,7 @@ import { FormField } from '../components/molecules/FormField'
 import { TextInput, Select } from '../components/atoms/Inputs'
 import { PrimaryButton, DangerLink } from '../components/atoms/Button'
 import { Badge } from '../components/atoms/Badge'
+import { BackButton } from '../components/atoms/BackButton'
 import type { Product, ProductUnit } from '../types'
 
 interface ProductForm { company_id: string; full_name: string; acronym: string; unit: ProductUnit; price: string }
@@ -109,7 +110,10 @@ export default function Products() {
   return (
     <PageContainer>
       <header className="mb-4 flex items-center justify-between">
-        <h1 className="font-display text-2xl font-extrabold text-ink-900">Products</h1>
+        <div className="flex items-center gap-3">
+          <BackButton to="/manage" />
+          <h1 className="font-display text-2xl font-extrabold text-ink-900">Products</h1>
+        </div>
         <button onClick={openAddProduct} className="flex items-center gap-1.5 rounded-full bg-crate-500 px-3.5 py-2 text-sm font-semibold text-white active:bg-crate-600">
           <Plus size={16} /> Add product
         </button>

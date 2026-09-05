@@ -53,6 +53,41 @@ export function daysInclusive(startISO: string, endISO: string): string[] {
   return out
 }
 
+export interface MonthRange { start: string; end: string; label: string }
+
+/** The current calendar month's full date range (1st to last day), with a
+ * human label like "September 2026". Billing and the calendar both need
+ * this computed from the real current date, never hardcoded. */
+export function getCurrentMonthRange(todayISO: string): MonthRange {
+  const d = new Date(todayISO + 'T00:00:00Z')
+  const year = d.getUTCFullYear()
+  const month = d.getUTCMonth()
+  const start = `${year}-${String(month + 1).padStart(2, '0')}-01`
+  const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate()
+  const end = `${year}-${String(month + 1).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
+  const label = d.toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' })
+  return { start, end, label }
+}
+
+/** A rolling window of the last N days ending today (inclusive) — used for
+ * the "this week" billing view. */
+export function getLastNDaysRange(todayISO: string, days: number): MonthRange {
+  const d = new Date(todayISO + 'T00:00:00Z')
+  d.setUTCDate(d.getUTCDate() - (days - 1))
+  return { start: d.toISOString().slice(0, 10), end: todayISO, label: `Last ${days} days` }
+}
+
+/** Formats any period into a readable label — "September 2026" for a full
+ * calendar month, otherwise the raw date range. */
+export function labelForPeriod(startISO: string, endISO: string): string {
+  const start = new Date(startISO + 'T00:00:00Z')
+  const end = new Date(endISO + 'T00:00:00Z')
+  const isFullMonth = start.getUTCDate() === 1 && end.getUTCDate() === new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth() + 1, 0)).getUTCDate()
+    && start.getUTCMonth() === end.getUTCMonth() && start.getUTCFullYear() === end.getUTCFullYear()
+  if (isFullMonth) return start.toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' })
+  return `${startISO} to ${endISO}`
+}
+
 export interface CalendarDay {
   date: string | null // null = padding cell (keeps weekday columns aligned)
   dayNumber: number | null
