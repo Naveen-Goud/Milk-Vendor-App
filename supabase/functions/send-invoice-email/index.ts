@@ -16,7 +16,18 @@
 // sandbox `onboarding@resend.dev` sender only delivers to your own
 // Resend account email, which is fine for testing but not for real vendors.
 //
-// Deploy with: supabase functions deploy send-invoice-email
+// Deploy with: supabase functions deploy send-invoice-email --no-verify-jwt
+//
+// The --no-verify-jwt flag matters here specifically: without it, Supabase's
+// own platform-level gateway checks the JWT before this function's code
+// ever runs — including, in some configurations, mishandling the browser's
+// CORS preflight (OPTIONS) request before it reaches the `if (req.method
+// === 'OPTIONS')` handling below. That shows up in the browser as a CORS
+// error, even though the actual cause is the platform layer, not this
+// function's own CORS headers. This function already does its own (better)
+// auth check internally (see callerClient.auth.getUser() below), so the
+// platform-level check is redundant here anyway — turning it off doesn't
+// weaken security, it just stops it from getting in the way.
 
 import { createClient } from 'jsr:@supabase/supabase-js@2'
 
@@ -28,6 +39,7 @@ const RESEND_FROM_EMAIL = Deno.env.get('RESEND_FROM_EMAIL') ?? 'onboarding@resen
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 
 interface LineItem {

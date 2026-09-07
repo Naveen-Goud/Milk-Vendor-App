@@ -1,13 +1,15 @@
-import { Fragment, useMemo, useState } from 'react'
-import { Mail, MessageCircle, FileText, Truck, Scissors, Plus } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { Mail, MessageCircle, FileText, Truck, Scissors, Plus, Milk } from 'lucide-react'
 import { useApp } from '../context/AppContext'
 import { computeInvoice } from '../lib/billing'
 import { getCurrentMonthRange, labelForPeriod } from '../lib/attendance'
+import { unitLabel, formatQty } from '../lib/unitLabel'
+import { buildWhatsAppLink, formatBillMessage } from '../lib/whatsapp'
 import { PageContainer } from '../components/templates/PageContainer'
 import { Sheet } from '../components/organisms/Sheet'
 import { Badge } from '../components/atoms/Badge'
 import { BackButton } from '../components/atoms/BackButton'
-import type { ComputedInvoice, Customer, Invoice } from '../types'
+import type { ComputedInvoice, Customer, Invoice, Vendor } from '../types'
 
 const statusTone = { paid: 'fresh', sent: 'crate', draft: 'amber' } as const
 const channelIcon = { email: Mail, whatsapp: MessageCircle, sms: Mail }
@@ -32,8 +34,7 @@ export default function Billing() {
 
   // Each invoice is computed using ITS OWN stored period, never a shared
   // hardcoded range — this is what makes the totals correct regardless of
-  // when the invoice was actually generated (last month via the scheduled
-  // job, this month via the button below, or any other period).
+  // when the invoice was actually generated.
   const computed = useMemo<ComputedRow[]>(() => {
     return invoices
       .map((inv) => {
@@ -68,38 +69,49 @@ export default function Billing() {
     }
   }
 
-  async function sendBill(row: ComputedRow) {
+  async function sendEmail(row: ComputedRow) {
+    if (!row.customer.email) return
     setSendingId(row.invoice.id)
     try {
-      if (row.customer.email) {
-        await sendInvoiceEmail(row.invoice.id, {
-          toEmail: row.customer.email,
-          customerName: row.customer.name,
-          periodLabel: row.periodLabel,
-          periodStart: row.bill.periodStart,
-          periodEnd: row.bill.periodEnd,
-          lineItems: row.bill.lineItems,
-          deliveryCharge: row.bill.deliveryCharge,
-          skippedDays: row.bill.skippedDays,
-          subtotal: row.bill.subtotal,
-          total: row.bill.total,
-        })
-      } else {
-        // No email on file — WhatsApp/SMS sending isn't wired to a real
-        // provider yet, so this still just marks the invoice sent. See
-        // README "Known limitations".
-        await markInvoiceSent(row.invoice.id, 'whatsapp')
-      }
+      await sendInvoiceEmail(row.invoice.id, {
+        toEmail: row.customer.email,
+        customerName: row.customer.name,
+        periodLabel: row.periodLabel,
+        periodStart: row.bill.periodStart,
+        periodEnd: row.bill.periodEnd,
+        lineItems: row.bill.lineItems,
+        deliveryCharge: row.bill.deliveryCharge,
+        skippedDays: row.bill.skippedDays,
+        subtotal: row.bill.subtotal,
+        total: row.bill.total,
+      })
     } catch (err) {
-      window.alert(err instanceof Error ? err.message : 'Could not send the bill')
+      window.alert(err instanceof Error ? err.message : 'Could not send the email')
     } finally {
       setSendingId(null)
     }
   }
 
+  // Opens WhatsApp with the bill pre-filled as a message — free, no setup,
+  // no Meta Business approval needed (unlike the full WhatsApp Cloud API).
+  // The tradeoff: the vendor still taps Send themselves in WhatsApp: this
+  // isn't fully automated. See README for the fully-automated path.
+  async function sendWhatsApp(row: ComputedRow) {
+    if (!row.customer.phone || !vendor) return
+    const message = formatBillMessage(vendor.name, row.periodLabel, row.bill)
+    window.open(buildWhatsAppLink(row.customer.phone, message), '_blank', 'noopener,noreferrer')
+    try {
+      await markInvoiceSent(row.invoice.id, 'whatsapp')
+    } catch {
+      // WhatsApp already opened for the vendor regardless — status update failing isn't worth blocking on
+    }
+  }
+
   async function sendAllPending() {
     for (const row of computed) {
-      if (row.invoice.status === 'draft') await sendBill(row)
+      if (row.invoice.status !== 'draft') continue
+      if (row.customer.email) await sendEmail(row)
+      else if (row.customer.phone) await sendWhatsApp(row)
     }
   }
 
@@ -148,30 +160,35 @@ export default function Billing() {
                   </Badge>
                 </div>
 
-                <div className="mt-3 flex gap-2">
-                  <button onClick={() => setViewing(inv.id)} className="flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-crate-100 py-2.5 text-sm font-semibold text-crate-600">
-                    <FileText size={15} /> View bill
-                  </button>
-                  {inv.status === 'draft' && (
+                <button onClick={() => setViewing(inv.id)} className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-xl border border-crate-100 py-2.5 text-sm font-semibold text-crate-600">
+                  <FileText size={15} /> View bill
+                </button>
+
+                <div className="mt-2 flex gap-2">
+                  {customer.email && (
                     <button
-                      onClick={() => sendBill(row)}
+                      onClick={() => sendEmail(row)}
                       disabled={busy}
-                      className="flex-1 rounded-xl bg-crate-500 py-2.5 text-sm font-semibold text-white active:bg-crate-600 disabled:opacity-60"
+                      className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-crate-500 py-2.5 text-sm font-semibold text-white active:bg-crate-600 disabled:opacity-60"
                     >
-                      {busy ? 'Sending…' : customer.email ? 'Generate & email' : 'Generate & send'}
+                      <Mail size={14} /> {busy ? 'Sending…' : inv.status === 'draft' ? 'Email' : 'Resend'}
                     </button>
                   )}
-                  {inv.status === 'sent' && (
-                    <>
-                      <button onClick={() => sendBill(row)} disabled={busy} className="flex-1 rounded-xl bg-crate-500 py-2.5 text-sm font-semibold text-white active:bg-crate-600 disabled:opacity-60">
-                        {busy ? 'Sending…' : 'Resend'}
-                      </button>
-                      <button onClick={() => markInvoicePaid(inv.id)} className="flex-1 rounded-xl bg-fresh-500 py-2.5 text-sm font-semibold text-white active:bg-fresh-600">
-                        Mark paid
-                      </button>
-                    </>
+                  {customer.phone && (
+                    <button
+                      onClick={() => sendWhatsApp(row)}
+                      className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-fresh-500 py-2.5 text-sm font-semibold text-white active:bg-fresh-600"
+                    >
+                      <MessageCircle size={14} /> WhatsApp
+                    </button>
                   )}
                 </div>
+
+                {inv.status === 'sent' && (
+                  <button onClick={() => markInvoicePaid(inv.id)} className="mt-2 w-full rounded-xl border border-fresh-500 py-2.5 text-sm font-semibold text-fresh-600">
+                    Mark paid
+                  </button>
+                )}
               </div>
             )
           })}
@@ -188,62 +205,68 @@ export default function Billing() {
         </div>
       )}
 
-      <Sheet open={!!viewingRow} title="Itemized bill" onClose={() => setViewing(null)}>
-        {viewingRow && <InvoiceDetail row={viewingRow} />}
+      <Sheet open={!!viewingRow} title="Bill" onClose={() => setViewing(null)}>
+        {viewingRow && (
+          <InvoiceDetail
+            row={viewingRow}
+            vendor={vendor}
+            onEmail={() => sendEmail(viewingRow)}
+            onWhatsApp={() => sendWhatsApp(viewingRow)}
+            busy={sendingId === viewingRow.invoice.id}
+          />
+        )}
       </Sheet>
     </PageContainer>
   )
 }
 
-function InvoiceDetail({ row }: { row: ComputedRow }) {
+function InvoiceDetail({
+  row, vendor, onEmail, onWhatsApp, busy,
+}: { row: ComputedRow; vendor: Vendor; onEmail: () => void; onWhatsApp: () => void; busy: boolean }) {
   const { customer, bill, invoice, periodLabel } = row
+
   return (
     <div>
-      <div className="mb-4 rounded-xl bg-crate-50 p-3.5">
-        <p className="font-display font-bold text-ink-900">{customer.name}</p>
-        <p className="text-sm text-ink-600">{customer.address}</p>
-        <p className="text-sm text-ink-600">{customer.phone}</p>
-        <p className="mt-1.5 text-xs font-semibold text-crate-600">{periodLabel} · {bill.periodStart} to {bill.periodEnd}</p>
+      <div className="mb-4 -mx-5 -mt-5 rounded-t-3xl bg-crate-500 px-5 py-5 text-white">
+        <div className="flex items-center gap-2 text-crate-100">
+          <Milk size={14} />
+          <span className="text-xs font-semibold uppercase tracking-wide">{vendor.name}</span>
+        </div>
+        <p className="mt-1 font-display text-lg font-bold">{customer.name}</p>
+        <p className="text-sm text-crate-100">{periodLabel} · {bill.periodStart} to {bill.periodEnd}</p>
       </div>
 
-      <div className="overflow-x-auto">
-      <table className="w-full min-w-[340px] text-sm">
-        <thead>
-          <tr className="border-b border-crate-100 text-left text-xs font-semibold uppercase tracking-wide text-ink-600">
-            <th className="pb-2">Product</th>
-            <th className="pb-2 text-right">Qty</th>
-            <th className="pb-2 text-right">Rate</th>
-            <th className="pb-2 text-right">Amount</th>
-          </tr>
-        </thead>
-        <tbody>
-          {bill.lineItems.length === 0 && (
-            <tr><td colSpan={4} className="py-3 text-center text-ink-600">No deliveries this period.</td></tr>
-          )}
-          {bill.lineItems.map((li) => (
-            <Fragment key={li.productId}>
-              <tr className="border-b border-crate-50">
-                <td className="py-2">
-                  <p className="font-medium text-ink-900">{li.label}</p>
-                  <p className="font-mono text-xs text-crate-600">{li.tag}</p>
-                </td>
-                <td className="py-2 text-right font-mono">{li.regularQty}{li.unit === 'litre' ? 'L' : ''}</td>
-                <td className="py-2 text-right font-mono">₹{li.rate}</td>
-                <td className="py-2 text-right font-mono font-semibold">₹{li.regularAmount.toFixed(2)}</td>
-              </tr>
-              {li.extraQty > 0 && (
-                <tr className="border-b border-crate-50 bg-fresh-50/60">
-                  <td className="py-2 pl-3 text-xs text-fresh-600">↳ Extra {li.tag}</td>
-                  <td className="py-2 text-right font-mono text-xs text-fresh-600">{li.extraQty}{li.unit === 'litre' ? 'L' : ''}</td>
-                  <td className="py-2 text-right font-mono text-xs text-fresh-600">₹{li.rate}</td>
-                  <td className="py-2 text-right font-mono text-xs font-semibold text-fresh-600">₹{li.extraAmount.toFixed(2)}</td>
-                </tr>
-              )}
-            </Fragment>
-          ))}
-        </tbody>
-      </table>
+      <div className="mb-4 rounded-xl bg-crate-50 p-3.5 text-sm text-ink-600">
+        <p>{customer.address}</p>
+        <p>{customer.phone}{customer.email ? ` · ${customer.email}` : ''}</p>
       </div>
+
+      {bill.lineItems.length === 0 ? (
+        <p className="rounded-xl border border-dashed border-crate-100 py-6 text-center text-sm text-ink-600">
+          No deliveries this period.
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {bill.lineItems.map((li) => (
+            <div key={li.productId} className="rounded-xl border border-crate-100 p-3.5">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="font-semibold text-ink-900">{li.label}</p>
+                  <p className="font-mono text-xs text-crate-600">{li.tag} · ₹{li.rate}/{unitLabel(li.unit)}</p>
+                </div>
+                <p className="shrink-0 font-mono font-semibold text-ink-900">₹{li.regularAmount.toFixed(2)}</p>
+              </div>
+              <p className="mt-1 text-xs text-ink-600">{formatQty(li.regularQty, li.unit)} delivered</p>
+              {li.extraQty > 0 && (
+                <div className="mt-2 flex items-center justify-between rounded-lg bg-fresh-50 px-2.5 py-1.5">
+                  <span className="text-xs font-medium text-fresh-600">+{formatQty(li.extraQty, li.unit)} extra</span>
+                  <span className="font-mono text-xs font-semibold text-fresh-600">₹{li.extraAmount.toFixed(2)}</span>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="mt-4 space-y-2 border-t border-crate-100 pt-3 text-sm">
         <div className="flex items-center justify-between text-ink-600">
@@ -266,6 +289,19 @@ function InvoiceDetail({ row }: { row: ComputedRow }) {
           <span>Total</span>
           <span className="font-mono">₹{bill.total.toFixed(2)}</span>
         </div>
+      </div>
+
+      <div className="mt-4 flex gap-2">
+        {customer.email && (
+          <button onClick={onEmail} disabled={busy} className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-crate-500 py-2.5 text-sm font-semibold text-white disabled:opacity-60">
+            <Mail size={14} /> {busy ? 'Sending…' : 'Email'}
+          </button>
+        )}
+        {customer.phone && (
+          <button onClick={onWhatsApp} className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-fresh-500 py-2.5 text-sm font-semibold text-white">
+            <MessageCircle size={14} /> WhatsApp
+          </button>
+        )}
       </div>
 
       {invoice.sent_via && (
