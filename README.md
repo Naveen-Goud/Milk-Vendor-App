@@ -68,12 +68,20 @@ service-role key, which must never reach the browser). This requires the
 ```bash
 supabase login
 supabase link --project-ref YOUR-PROJECT-REF
-supabase functions deploy manage-delivery-boy
+supabase functions deploy manage-delivery-boy --no-verify-jwt
 ```
 
 `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY` are
 injected into every Edge Function automatically by Supabase — you don't
 need to set these as secrets yourself.
+
+`--no-verify-jwt` matters here: without it, Supabase's own platform gateway
+checks the JWT before this function's code runs at all, which can mishandle
+the browser's CORS preflight and surface as a confusing "CORS error" even
+though the real cause is the platform layer, not this function. It already
+does its own (better) auth check internally, so the platform check is
+redundant — and if you deployed without this flag before and hit a CORS
+error calling these functions, redeploying with it is the fix.
 
 ### 3b. Set up real email sending for bills
 Bills are actually emailed now (not just marked "sent") via
@@ -87,8 +95,10 @@ Bills are actually emailed now (not just marked "sent") via
    ```bash
    supabase secrets set RESEND_API_KEY=re_xxxxxxxx
    supabase secrets set RESEND_FROM_EMAIL="billing@yourdomain.com"
-   supabase functions deploy send-invoice-email
+   supabase functions deploy send-invoice-email --no-verify-jwt
    ```
+   The `--no-verify-jwt` flag is important — see the note above under step 3
+   for why omitting it commonly shows up as a CORS error in the browser.
 4. **On-demand sending** (Billing screen → "Generate & email" / "Resend")
    works as soon as this is deployed — no further setup needed.
 5. **Automatic monthly billing** is optional — see below.
@@ -191,22 +201,42 @@ static total), each customer has a running billed/paid/pending ledger with
 a "Record payment" action, and Dashboard → Analytics shows daily revenue,
 revenue by product, top customers, attendance rate, and outstanding dues.
 
-## Email billing
+## Email & WhatsApp billing
 
-Bills are genuinely emailed via Resend now — not just marked "sent."
-On-demand sending happens from the Billing screen; a customer with an
-email on file gets a real itemized HTML email when you tap "Generate &
-email" or "Resend." Customers without an email fall back to the old
-status-flip behavior for now (WhatsApp/SMS sending isn't wired to a real
-provider yet — see limitations below).
+Bills are genuinely emailed via Resend — not just marked "sent." On-demand
+sending happens from the Billing screen; a customer with an email on file
+gets a real itemized HTML email when you tap "Email" or "Resend."
+
+Every customer with a phone number also gets a **WhatsApp** button — free,
+no setup, no Meta Business approval, using a `wa.me` click-to-chat link
+that opens WhatsApp with the itemized bill pre-filled as a message. The one
+real limitation: it's not fully automated — you (the vendor) still tap Send
+in WhatsApp yourself. Full automation via the WhatsApp Cloud API is
+possible but needs Meta Business verification and pre-approved message
+templates, which is a separate setup this app doesn't include yet.
 
 Optional automated monthly billing is available too (see setup above) — a
 scheduled job that generates and emails last month's bills for every
 customer with nothing extra to click, skipping anyone already invoiced for
-that period.
+that period. (The monthly job only sends email, not WhatsApp, since
+WhatsApp sending here requires someone to tap Send.)
 
 ## Confirmed fixed (found via real device testing)
 
+- **CORS error sending emails**: `send-invoice-email` and
+  `manage-delivery-boy` were documented to deploy without
+  `--no-verify-jwt`. Without it, Supabase's platform-level gateway can
+  mishandle the browser's CORS preflight before the function's own code —
+  and its own internal auth check — ever runs. Fixed in both the function
+  comments and the deploy instructions above. **If you deployed either
+  function before this fix, redeploy with `--no-verify-jwt` to pick it up.**
+- **Bill quantities looked wrong for packet/kg products**: the underlying
+  math was always correct (price × quantity, regardless of unit), but the
+  display only ever appended a unit suffix ("L") for litre products —
+  packet and kg quantities showed a bare, unlabeled number, which read as
+  a calculation bug even though it wasn't one. Fixed: every quantity now
+  shows its unit consistently, and the rate itself now shows what it's
+  *per* (e.g. `₹20/pkt`) instead of a bare number.
 - The `vendors` table RLS policy that silently blocked delivery boys from
   loading their own vendor's data (fixed: now uses `current_vendor_id()`
   instead of `auth.uid()` for reads).
@@ -254,6 +284,11 @@ that period.
 - **`lookup_vendor_by_code`** SQL function exists in the schema (for a
   future "show business name before login" UX nicety) but isn't called by
   the app yet.
-- **WhatsApp/SMS bill sending** still just flips the invoice status without
-  actually sending anything — only email is real. See the original plan's
-  cost comparison if you want to add the WhatsApp Cloud API next.
+- **WhatsApp sending is real but manual-tap, not automated**; SMS still
+  isn't wired to anything. The WhatsApp button opens a pre-filled message
+  via `wa.me` — genuinely sends, but the vendor taps Send themselves in
+  WhatsApp. Full automation needs the WhatsApp Cloud API (Meta Business
+  verification + pre-approved message templates) or an SMS provider (DLT
+  registration in India) — both are real external approval processes, not
+  something togglable in code. See the original plan's cost comparison if
+  you want to pursue either.

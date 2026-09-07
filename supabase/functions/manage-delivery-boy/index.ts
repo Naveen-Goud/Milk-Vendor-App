@@ -9,7 +9,14 @@
 // Supabase, no manual secret needed), and is invoked by the vendor's
 // authenticated client via `supabase.functions.invoke('manage-delivery-boy', ...)`.
 //
-// Deploy with: supabase functions deploy manage-delivery-boy
+// Deploy with: supabase functions deploy manage-delivery-boy --no-verify-jwt
+//
+// The --no-verify-jwt flag matters: without it, Supabase's platform-level
+// gateway checks the JWT before this function's own code runs, which can
+// mishandle the browser's CORS preflight and show up as a confusing CORS
+// error even though the real cause is the platform layer. This function
+// already verifies the caller itself (see callerClient.auth.getUser() +
+// the vendor-role check below), so the platform check is redundant here.
 //
 // SUPABASE_URL / SUPABASE_ANON_KEY / SUPABASE_SERVICE_ROLE_KEY are injected
 // automatically into every Edge Function's environment by Supabase — you do
@@ -24,6 +31,7 @@ const ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY')!
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 
 interface CreatePayload {
