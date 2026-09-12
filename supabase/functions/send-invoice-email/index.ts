@@ -182,5 +182,6 @@ function escapeHtml(s: string): string {
 }
 
 function json(body: unknown, status = 200): Response {
+  if (status >= 400) console.error(`send-invoice-email ${status}:`, body)
   return new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
 }
