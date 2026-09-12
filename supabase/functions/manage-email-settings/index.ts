@@ -119,14 +119,14 @@ Deno.serve(async (req) => {
       }
       if (!/^\S+@\S+\.\S+$/.test(fromEmail)) return json({ error: 'From email doesn\'t look valid' }, 400)
 
-      // Lightweight live check — confirms the key actually authenticates
-      // with Resend before we persist it, without needing a recipient.
-      const checkRes = await fetch('https://api.resend.com/domains', {
-        headers: { Authorization: `Bearer ${apiKey}` },
-      })
-      if (checkRes.status === 401 || checkRes.status === 403) {
-        return json({ error: 'Resend rejected this API key — double check it was copied correctly' }, 400)
-      }
+      // NOTE: deliberately NOT re-checking the key against Resend's
+      // /domains endpoint here. That was tried initially as an extra
+      // safety check, but Resend API keys can be scoped to "Sending
+      // access only" — which can send email (proven by the mandatory
+      // test-send the UI already requires before this runs) but does NOT
+      // have permission to list domains, so that check false-rejected
+      // perfectly valid restricted-scope keys. The test-send step is the
+      // real validation; nothing further is needed here.
 
       const { data: existing } = await admin
         .from('vendor_email_settings')
@@ -168,5 +168,6 @@ Deno.serve(async (req) => {
 })
 
 function json(body: unknown, status = 200): Response {
+  if (status >= 400) console.error(`manage-email-settings ${status}:`, body)
   return new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
 }

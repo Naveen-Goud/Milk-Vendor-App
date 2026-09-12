@@ -163,5 +163,6 @@ Deno.serve(async (req) => {
 })
 
 function json(body: unknown, status = 200): Response {
+  if (status >= 400) console.error(`manage-delivery-boy ${status}:`, body)
   return new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
 }
