@@ -7,6 +7,7 @@ import type {
 } from '../types'
 import { supabase } from '../lib/supabaseClient'
 import { syntheticDeliveryBoyEmail, generateVendorCode } from '../lib/authEmails'
+import { invokeEdgeFunction } from '../lib/edgeFunctions'
 import * as db from '../lib/db'
 
 // Auth/data lifecycle:
@@ -305,31 +306,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const addDeliveryBoy = useCallback(async ({ name, phone, routeName, pin }: DeliveryBoyFormInput) => {
     const client = requireDb()
     if (!pin) throw new Error('PIN is required')
-    const { data, error } = await client.functions.invoke('manage-delivery-boy', {
-      body: { action: 'create', name, phone, pin, routeName },
-    })
-    if (error) throw new Error(error.message)
-    if (data?.error) throw new Error(data.error)
+    await invokeEdgeFunction(client, 'manage-delivery-boy', { action: 'create', name, phone, pin, routeName })
     await refreshTenant()
     showToast(`${name} added`)
   }, [requireDb, refreshTenant, showToast])
 
   const updateDeliveryBoy = useCallback(async (id: string, { name, phone, routeName, pin }: DeliveryBoyFormInput) => {
     const client = requireDb()
-    const { data, error } = await client.functions.invoke('manage-delivery-boy', {
-      body: { action: 'update', boyId: id, name, phone, routeName, pin: pin || undefined },
-    })
-    if (error) throw new Error(error.message)
-    if (data?.error) throw new Error(data.error)
+    await invokeEdgeFunction(client, 'manage-delivery-boy', { action: 'update', boyId: id, name, phone, routeName, pin: pin || undefined })
     await refreshTenant()
     showToast('Delivery boy updated')
   }, [requireDb, refreshTenant, showToast])
 
   const deleteDeliveryBoy = useCallback(async (id: string) => {
     const client = requireDb()
-    const { data, error } = await client.functions.invoke('manage-delivery-boy', { body: { action: 'delete', boyId: id } })
-    if (error) throw new Error(error.message)
-    if (data?.error) throw new Error(data.error)
+    await invokeEdgeFunction(client, 'manage-delivery-boy', { action: 'delete', boyId: id })
     await refreshTenant()
     showToast('Delivery boy removed')
   }, [requireDb, refreshTenant, showToast])
@@ -413,11 +404,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // those channels (see README "Known limitations").
   const sendInvoiceEmailFn = useCallback(async (id: string, payload: SendInvoiceEmailInput) => {
     const client = requireDb()
-    const { data, error } = await client.functions.invoke('send-invoice-email', {
-      body: { invoiceId: id, ...payload },
-    })
-    if (error) throw new Error(error.message)
-    if (data?.error) throw new Error(data.error)
+    await invokeEdgeFunction(client, 'send-invoice-email', { invoiceId: id, ...payload })
     const sent_at = new Date().toISOString()
     await db.updateInvoiceStatus(client, id, { status: 'sent', sent_via: 'email', sent_at })
     setTenant((t) => ({ ...t, invoices: t.invoices.map((inv) => (inv.id === id ? { ...inv, status: 'sent', sent_via: 'email', sent_at } : inv)) }))
@@ -441,25 +428,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const testEmailSettingsFn = useCallback(async (input: EmailSettingsInput & { testRecipient: string }) => {
     const client = requireDb()
-    const { data, error } = await client.functions.invoke('manage-email-settings', { body: { action: 'test', ...input } })
-    if (error) throw new Error(error.message)
-    if (data?.error) throw new Error(data.error)
+    await invokeEdgeFunction(client, 'manage-email-settings', { action: 'test', ...input })
   }, [requireDb])
 
   const saveEmailSettingsFn = useCallback(async (input: EmailSettingsInput) => {
     const client = requireDb()
-    const { data, error } = await client.functions.invoke('manage-email-settings', { body: { action: 'save', ...input } })
-    if (error) throw new Error(error.message)
-    if (data?.error) throw new Error(data.error)
+    await invokeEdgeFunction(client, 'manage-email-settings', { action: 'save', ...input })
     await refreshEmailSettings()
     showToast('Email sending connected')
   }, [requireDb, refreshEmailSettings, showToast])
 
   const removeEmailSettingsFn = useCallback(async () => {
     const client = requireDb()
-    const { data, error } = await client.functions.invoke('manage-email-settings', { body: { action: 'remove' } })
-    if (error) throw new Error(error.message)
-    if (data?.error) throw new Error(data.error)
+    await invokeEdgeFunction(client, 'manage-email-settings', { action: 'remove' })
     setEmailSettings(null)
     showToast('Email sending disconnected')
   }, [requireDb, showToast])
