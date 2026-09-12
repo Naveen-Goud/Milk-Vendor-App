@@ -6,6 +6,13 @@
 // month if one doesn't already exist, computes the bill, emails it via
 // Resend, and marks it 'sent'.
 //
+// BYOK: each vendor sends through their OWN Resend key (see
+// supabase/functions/manage-email-settings), not a shared platform key.
+// This function looks up each vendor's key once per run, before looping
+// over their customers. A vendor who hasn't connected a key yet simply has
+// all of that period's invoices left as 'draft' (counted under `skipped`)
+// so nothing is lost — they can send manually once they connect one.
+//
 // This duplicates the day-resolution and billing math from
 // src/lib/attendance.ts and src/lib/billing.ts in Deno, since Edge
 // Functions run in a separate runtime from the Vite app and can't share
@@ -24,8 +31,6 @@ import { createClient } from 'jsr:@supabase/supabase-js@2'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
-const RESEND_API_KEY = Deno.env.get('RESEND_API_KEY')!
-const RESEND_FROM_EMAIL = Deno.env.get('RESEND_FROM_EMAIL') ?? 'onboarding@resend.dev'
 const CRON_SECRET = Deno.env.get('CRON_SECRET')!
 
 interface Product { id: string; company_id: string; full_name: string; acronym: string; unit: string; price: number }
@@ -79,6 +84,23 @@ Deno.serve(async (req) => {
 
   for (const vendor of vendors ?? []) {
     let sent = 0, skipped = 0, failed = 0
+
+    // BYOK lookup: this vendor's own Resend key + from-address, decrypted
+    // from Vault. If they haven't connected one, every invoice this run
+    // generates for them stays 'draft' — see the `if (!emailAuth)` check
+    // in the per-customer loop below.
+    const { data: emailSettingsRow } = await admin
+      .from('vendor_email_settings')
+      .select('secret_id, from_email, from_name')
+      .eq('vendor_id', vendor.id)
+      .maybeSingle()
+    let emailAuth: { apiKey: string; fromEmail: string; fromName: string } | null = null
+    if (emailSettingsRow) {
+      const { data: apiKey } = await admin.rpc('vault_get_secret', { p_secret_id: emailSettingsRow.secret_id })
+      if (apiKey) {
+        emailAuth = { apiKey, fromEmail: emailSettingsRow.from_email, fromName: emailSettingsRow.from_name || vendor.business_name }
+      }
+    }
 
     const [customersRes, productsRes, companiesRes, exceptionsRes, existingInvoicesRes] = await Promise.all([
       admin.from('customers').select('id, name, email, is_paused, created_at, customer_subscriptions(product_id, default_qty)').eq('vendor_id', vendor.id).eq('is_paused', false),
@@ -147,6 +169,7 @@ Deno.serve(async (req) => {
       if (invErr || !invoice) { failed++; continue }
 
       if (!customer.email) { skipped++; continue } // nothing to email — left as a draft for the vendor to handle manually
+      if (!emailAuth) { skipped++; continue } // vendor hasn't connected their own Resend key yet — left as a draft
 
       try {
         const html = renderInvoiceEmail(vendor.business_name, {
@@ -155,8 +178,8 @@ Deno.serve(async (req) => {
         })
         const sendRes = await fetch('https://api.resend.com/emails', {
           method: 'POST',
-          headers: { Authorization: `Bearer ${RESEND_API_KEY}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ from: `${vendor.business_name} <${RESEND_FROM_EMAIL}>`, to: [customer.email], subject: `${vendor.business_name} — Bill for ${label}`, html }),
+          headers: { Authorization: `Bearer ${emailAuth.apiKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ from: `${emailAuth.fromName} <${emailAuth.fromEmail}>`, to: [customer.email], subject: `${vendor.business_name} — Bill for ${label}`, html }),
         })
         if (!sendRes.ok) throw new Error(await sendRes.text())
         await admin.from('invoices').update({ status: 'sent', sent_via: 'email', sent_at: new Date().toISOString() }).eq('id', invoice.id)

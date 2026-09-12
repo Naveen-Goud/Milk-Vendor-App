@@ -180,3 +180,15 @@ export interface CustomerLedger {
   paid: number
   pending: number
 }
+
+// ---- Vendor's own email sending setup (BYOK) -----------------------------
+// The vendor's actual Resend API key is never present here or anywhere on
+// the client — it lives encrypted in Supabase Vault. This is just the
+// display-safe status of that connection.
+export interface EmailSettings {
+  fromEmail: string
+  fromName: string | null
+  keyLast4: string
+  verifiedAt: string | null
+  updatedAt: string
+}

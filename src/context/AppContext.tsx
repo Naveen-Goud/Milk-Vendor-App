@@ -3,7 +3,7 @@ import {
 } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import type {
-  Vendor, Product, Customer, DeliveryItem, CurrentUser, PaymentMethod, TenantData, Invoice,
+  Vendor, Product, Customer, DeliveryItem, CurrentUser, PaymentMethod, TenantData, Invoice, EmailSettings,
 } from '../types'
 import { supabase } from '../lib/supabaseClient'
 import { syntheticDeliveryBoyEmail, generateVendorCode } from '../lib/authEmails'
@@ -46,6 +46,8 @@ export interface SendInvoiceEmailInput {
   total: number
 }
 
+interface EmailSettingsInput { apiKey: string; fromEmail: string; fromName?: string }
+
 interface AppContextValue extends TenantData {
   authStatus: AuthStatus
   currentUser: CurrentUser | null
@@ -53,6 +55,8 @@ interface AppContextValue extends TenantData {
   toast: string | null
   today: string
   configured: boolean
+  emailSettings: EmailSettings | null
+  emailSettingsLoading: boolean
 
   signUpVendor: (input: SignUpInput) => Promise<{ needsEmailConfirmation: boolean }>
   finishVendorSetup: (input: FinishSetupInput) => Promise<void>
@@ -81,6 +85,11 @@ interface AppContextValue extends TenantData {
   markInvoicePaid: (id: string) => Promise<void>
   addPayment: (customerId: string, amount: number, method: PaymentMethod, note?: string) => Promise<void>
   generateInvoicesForPeriod: (periodStart: string, periodEnd: string) => Promise<number>
+
+  refreshEmailSettings: () => Promise<void>
+  testEmailSettings: (input: EmailSettingsInput & { testRecipient: string }) => Promise<void>
+  saveEmailSettings: (input: EmailSettingsInput) => Promise<void>
+  removeEmailSettings: () => Promise<void>
 }
 
 const AppContext = createContext<AppContextValue | null>(null)
@@ -95,6 +104,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [vendor, setVendor] = useState<Vendor | null>(null)
   const [tenant, setTenant] = useState<TenantData>(emptyTenant)
   const [toast, setToastState] = useState<string | null>(null)
+  // Loaded lazily (not as part of resolveSession) since only the vendor
+  // owner's Settings screen ever needs this — no reason to add a query to
+  // every login, including every delivery boy's.
+  const [emailSettings, setEmailSettings] = useState<EmailSettings | null>(null)
+  const [emailSettingsLoading, setEmailSettingsLoading] = useState(false)
 
   const showToast = useCallback((message: string) => {
     setToastState(message)
@@ -410,6 +424,46 @@ export function AppProvider({ children }: { children: ReactNode }) {
     showToast(`Bill emailed to ${payload.toEmail}`)
   }, [requireDb, showToast])
 
+  // ---- Email sending settings (BYOK) --------------------------------------
+  const refreshEmailSettings = useCallback(async () => {
+    const client = requireDb()
+    if (!vendor) return
+    setEmailSettingsLoading(true)
+    try {
+      const settings = await db.fetchEmailSettings(client, vendor.id)
+      setEmailSettings(settings)
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Could not load email settings')
+    } finally {
+      setEmailSettingsLoading(false)
+    }
+  }, [requireDb, vendor])
+
+  const testEmailSettingsFn = useCallback(async (input: EmailSettingsInput & { testRecipient: string }) => {
+    const client = requireDb()
+    const { data, error } = await client.functions.invoke('manage-email-settings', { body: { action: 'test', ...input } })
+    if (error) throw new Error(error.message)
+    if (data?.error) throw new Error(data.error)
+  }, [requireDb])
+
+  const saveEmailSettingsFn = useCallback(async (input: EmailSettingsInput) => {
+    const client = requireDb()
+    const { data, error } = await client.functions.invoke('manage-email-settings', { body: { action: 'save', ...input } })
+    if (error) throw new Error(error.message)
+    if (data?.error) throw new Error(data.error)
+    await refreshEmailSettings()
+    showToast('Email sending connected')
+  }, [requireDb, refreshEmailSettings, showToast])
+
+  const removeEmailSettingsFn = useCallback(async () => {
+    const client = requireDb()
+    const { data, error } = await client.functions.invoke('manage-email-settings', { body: { action: 'remove' } })
+    if (error) throw new Error(error.message)
+    if (data?.error) throw new Error(data.error)
+    setEmailSettings(null)
+    showToast('Email sending disconnected')
+  }, [requireDb, showToast])
+
   const markInvoicePaid = useCallback(async (id: string) => {
     const client = requireDb()
     await db.updateInvoiceStatus(client, id, { status: 'paid' })
@@ -458,6 +512,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const value = useMemo<AppContextValue>(() => ({
     ...tenant,
     authStatus, currentUser, vendor, toast, today: TODAY, configured: !!supabase,
+    emailSettings, emailSettingsLoading,
     signUpVendor, finishVendorSetup, signInVendor, signInDeliveryBoy, logout, changePassword,
     updateVendor: updateVendorFn,
     addCompany, deleteCompany: deleteCompanyFn,
@@ -466,10 +521,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     addCustomer, updateCustomer: updateCustomerFn, deleteCustomer: deleteCustomerFn,
     markAbsent, modifyDelivery, undoException,
     markInvoiceSent, sendInvoiceEmail: sendInvoiceEmailFn, markInvoicePaid, addPayment, generateInvoicesForPeriod,
-  }), [tenant, authStatus, currentUser, vendor, toast, signUpVendor, finishVendorSetup, signInVendor, signInDeliveryBoy,
+    refreshEmailSettings, testEmailSettings: testEmailSettingsFn, saveEmailSettings: saveEmailSettingsFn, removeEmailSettings: removeEmailSettingsFn,
+  }), [tenant, authStatus, currentUser, vendor, toast, emailSettings, emailSettingsLoading, signUpVendor, finishVendorSetup, signInVendor, signInDeliveryBoy,
       logout, changePassword, updateVendorFn, addCompany, deleteCompanyFn, addProduct, updateProductFn, deleteProductFn,
       addDeliveryBoy, updateDeliveryBoy, deleteDeliveryBoy, addCustomer, updateCustomerFn, deleteCustomerFn,
-      markAbsent, modifyDelivery, undoException, markInvoiceSent, sendInvoiceEmailFn, markInvoicePaid, addPayment, generateInvoicesForPeriod])
+      markAbsent, modifyDelivery, undoException, markInvoiceSent, sendInvoiceEmailFn, markInvoicePaid, addPayment, generateInvoicesForPeriod,
+      refreshEmailSettings, testEmailSettingsFn, saveEmailSettingsFn, removeEmailSettingsFn])
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>
 }

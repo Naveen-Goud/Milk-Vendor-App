@@ -7,6 +7,7 @@ import { TextInput } from '../components/atoms/Inputs'
 import { PrimaryButton } from '../components/atoms/Button'
 import { IconCircle } from '../components/atoms/IconCircle'
 import { BackButton } from '../components/atoms/BackButton'
+import { EmailSettingsSection } from '../components/organisms/EmailSettingsSection'
 
 export default function Settings() {
   const { vendor, updateVendor, changePassword } = useApp()
@@ -105,6 +106,8 @@ export default function Settings() {
           <button type="submit" className="shrink-0 rounded-xl bg-crate-500 px-4 text-sm font-semibold text-white">Save</button>
         </form>
       </section>
+
+      <EmailSettingsSection />
 
       <section className="mt-4 rounded-2xl border border-crate-100 bg-white p-4">
         <div className="mb-4 flex items-center gap-2">
