@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type {
   TenantData, Vendor, Customer, Product, Company, RouteRecord, DeliveryBoy,
   DeliveryException, DeliveryItem, Invoice, Payment, PaymentMethod, ProductUnit, ExceptionStatus,
+  EmailSettings,
 } from '../types'
 
 // Thin data-access layer: every function here is a direct, typed wrapper
@@ -222,4 +223,25 @@ export async function insertPayment(
   const res = await db.from('payments').insert({ vendor_id: vendorId, customer_id: customerId, amount, date, method, note }).select().single()
   const row = unwrap(res)
   return { id: row.id, customer_id: customerId, amount, date, method, note }
+}
+
+// ---- Email sending settings (BYOK) --------------------------------------
+// Read-only from the client — actually saving/testing/removing a key
+// always goes through the manage-email-settings Edge Function, never a
+// direct write here, so the Vault secret and this row can't drift apart.
+export async function fetchEmailSettings(db: SupabaseClient, vendorId: string): Promise<EmailSettings | null> {
+  const res = await db
+    .from('vendor_email_settings')
+    .select('from_email, from_name, key_last4, verified_at, updated_at')
+    .eq('vendor_id', vendorId)
+    .maybeSingle()
+  if (res.error) throw new Error(res.error.message)
+  if (!res.data) return null
+  return {
+    fromEmail: res.data.from_email,
+    fromName: res.data.from_name,
+    keyLast4: res.data.key_last4,
+    verifiedAt: res.data.verified_at,
+    updatedAt: res.data.updated_at,
+  }
 }

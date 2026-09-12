@@ -8,13 +8,15 @@
 // send the email. It does NOT recompute billing server-side, so the emailed
 // bill always matches exactly what the vendor saw before hitting send.
 //
-// Requires a Resend API key set as a secret:
-//   supabase secrets set RESEND_API_KEY=re_xxxxxxxx
-//   supabase secrets set RESEND_FROM_EMAIL="billing@yourdomain.com"
-// RESEND_FROM_EMAIL must be on a domain you've verified with Resend —
-// see https://resend.com/domains. Until you verify a domain, Resend's
-// sandbox `onboarding@resend.dev` sender only delivers to your own
-// Resend account email, which is fine for testing but not for real vendors.
+// BYOK: this app is sold to multiple vendors sharing one deployment, so
+// there is deliberately no shared/platform-level Resend key here anymore.
+// Each vendor connects their own Resend account from Settings → Email
+// sending (see supabase/functions/manage-email-settings), which stores
+// their key encrypted in Supabase Vault. This function looks up that
+// specific vendor's key at send time — see vendor_email_settings /
+// vault_get_secret below. If a vendor hasn't connected a key yet, this
+// fails with a clear message rather than silently falling back to anyone
+// else's key or reputation.
 //
 // Deploy with: supabase functions deploy send-invoice-email --no-verify-jwt
 //
@@ -33,8 +35,7 @@ import { createClient } from 'jsr:@supabase/supabase-js@2'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY')!
-const RESEND_API_KEY = Deno.env.get('RESEND_API_KEY')!
-const RESEND_FROM_EMAIL = Deno.env.get('RESEND_FROM_EMAIL') ?? 'onboarding@resend.dev'
+const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -93,13 +94,33 @@ Deno.serve(async (req) => {
     const { data: vendor } = await callerClient.from('vendors').select('business_name').eq('id', profile.vendor_id).single()
     const businessName = vendor?.business_name ?? 'Your Dairy'
 
+    // Admin client — service role, bypasses RLS. Only used for the two
+    // BYOK lookups below (this vendor's own settings row, then decrypting
+    // their own key from Vault), never for arbitrary cross-tenant reads.
+    const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY)
+
+    const { data: emailSettings } = await admin
+      .from('vendor_email_settings')
+      .select('secret_id, from_email, from_name')
+      .eq('vendor_id', profile.vendor_id)
+      .maybeSingle()
+
+    if (!emailSettings) {
+      return json({ error: 'Email sending isn\'t set up yet. Add your Resend API key in Settings → Email sending, then try again.' }, 400)
+    }
+
+    const { data: apiKey, error: keyErr } = await admin.rpc('vault_get_secret', { p_secret_id: emailSettings.secret_id })
+    if (keyErr || !apiKey) return json({ error: 'Could not retrieve your saved email API key. Try reconnecting it in Settings.' }, 500)
+
+    const fromName = emailSettings.from_name || businessName
+
     const html = renderInvoiceEmail(businessName, payload)
 
     const sendRes = await fetch('https://api.resend.com/emails', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        from: `${businessName} <${RESEND_FROM_EMAIL}>`,
+        from: `${fromName} <${emailSettings.from_email}>`,
         to: [payload.toEmail],
         subject: `${businessName} — Bill for ${payload.periodLabel}`,
         html,

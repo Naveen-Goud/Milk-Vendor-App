@@ -69,6 +69,8 @@ service-role key, which must never reach the browser). This requires the
 supabase login
 supabase link --project-ref YOUR-PROJECT-REF
 supabase functions deploy manage-delivery-boy --no-verify-jwt
+supabase functions deploy send-invoice-email --no-verify-jwt
+supabase functions deploy manage-email-settings --no-verify-jwt
 ```
 
 `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY` are
@@ -83,25 +85,43 @@ does its own (better) auth check internally, so the platform check is
 redundant — and if you deployed without this flag before and hit a CORS
 error calling these functions, redeploying with it is the fix.
 
-### 3b. Set up real email sending for bills
-Bills are actually emailed now (not just marked "sent") via
-[Resend](https://resend.com) — free tier is plenty for a small vendor.
+### 3b. Email sending for bills — BYOK (Bring Your Own Key)
+Bills are emailed via [Resend](https://resend.com) — but since this app is
+sold to multiple independent vendors sharing one deployment, there is **no
+shared platform-level Resend key**. Each vendor connects their own free
+Resend account from inside the app (**Settings → Email sending**), which
+stores their key encrypted in Supabase Vault. This keeps each vendor's free
+tier, deliverability reputation, and cost fully separate from every other
+vendor's.
 
-1. Create a free Resend account and grab an API key.
-2. (Recommended for real vendors, optional for testing) [Verify a sending
-   domain](https://resend.com/domains) — until you do, Resend's sandbox
-   sender only delivers to your own Resend account's email address.
-3. Set the secrets and deploy:
-   ```bash
-   supabase secrets set RESEND_API_KEY=re_xxxxxxxx
-   supabase secrets set RESEND_FROM_EMAIL="billing@yourdomain.com"
-   supabase functions deploy send-invoice-email --no-verify-jwt
-   ```
-   The `--no-verify-jwt` flag is important — see the note above under step 3
-   for why omitting it commonly shows up as a CORS error in the browser.
-4. **On-demand sending** (Billing screen → "Generate & email" / "Resend")
-   works as soon as this is deployed — no further setup needed.
-5. **Automatic monthly billing** is optional — see below.
+**One-time project setup (you, the app owner):**
+1. Run the *entire* `supabase/schema.sql` (or, if you already have a live
+   project from before this feature, just the new `vendor_email_settings`
+   table / `vault_*` functions / trigger block — it's additive, doesn't
+   touch any existing table). Supabase Vault ships enabled by default on
+   every project; if `vault.create_secret` errors as "function does not
+   exist", enable the **Vault** extension under **Database → Extensions**
+   first.
+2. Deploy the two email functions shown in step 3 above
+   (`send-invoice-email` and `manage-email-settings`) — neither needs any
+   secrets set manually; they read a vendor's key out of Vault at send time.
+
+**Per-vendor setup (each vendor does this themselves, once):**
+1. Sign up for a free [Resend](https://resend.com) account and grab an API
+   key.
+2. [Verify a sending domain](https://resend.com/domains) — until this is
+   done, Resend's sandbox sender only delivers to the Resend account's own
+   email address, which is fine for the test step below but not for real
+   customers.
+3. In the app: **Settings → Email sending → Set up email sending**. Paste
+   the API key, the "from" address on the verified domain, send a test
+   email to confirm it works, then save.
+
+Once connected, **on-demand sending** (Billing screen → "Generate & email" /
+"Resend") and **automatic monthly billing** (below) both just work — no
+further config. A vendor who hasn't connected a key yet gets a clear
+in-app message instead of a silent failure, and automated monthly billing
+simply leaves their invoices as drafts until they do.
 
 ### Automating monthly billing (optional)
 Generates and emails last month's bills for every vendor's customers
@@ -120,7 +140,8 @@ automatically, on a schedule, with no one needing to click anything.
 
 Runs at 3 AM UTC on the 1st of every month; skips customers who already
 have an invoice for that period or had nothing delivered; leaves anyone
-without an email as a draft invoice for the vendor to send manually.
+without an email address, or any vendor who hasn't connected their own
+Resend key yet, as draft invoices to send manually.
 
 ### 4. Configure environment variables
 ```bash
@@ -206,6 +227,12 @@ revenue by product, top customers, attendance rate, and outstanding dues.
 Bills are genuinely emailed via Resend — not just marked "sent." On-demand
 sending happens from the Billing screen; a customer with an email on file
 gets a real itemized HTML email when you tap "Email" or "Resend."
+
+Each vendor connects their own Resend account (**Settings → Email
+sending** — see setup step 3b above) rather than sharing one key across
+every vendor on this app, so free-tier quota, deliverability reputation,
+and cost are all isolated per vendor. A vendor who hasn't connected a key
+yet sees a clear prompt instead of emails silently failing.
 
 Every customer with a phone number also gets a **WhatsApp** button — free,
 no setup, no Meta Business approval, using a `wa.me` click-to-chat link

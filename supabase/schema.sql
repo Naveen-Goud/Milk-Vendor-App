@@ -304,6 +304,116 @@ create policy "delivery boy manages own route exception_items" on public.deliver
     )
   );
 
+-- ============================================================================
+-- BYOK email sending
+--
+-- This app is sold to multiple independent vendors sharing one deployment.
+-- If every vendor's invoice emails went out through one Resend API key
+-- owned by the app owner, three things would break as vendors are added:
+--   1. Free-tier quota (3,000/mo, 100/day) is shared across ALL vendors,
+--      not given per-vendor.
+--   2. One vendor's bounces/spam-complaints hurt deliverability for every
+--      other vendor sending from the same domain/account.
+--   3. The app owner is stuck paying (and being responsible for) every
+--      vendor's email volume indefinitely.
+--
+-- So instead, each vendor supplies their OWN free Resend account and API
+-- key ("Bring Your Own Key"). The key is never stored in plaintext in an
+-- ordinary table — it's stored in Supabase Vault (encrypted at rest via
+-- pgsodium), and vendor_email_settings only holds a reference to it plus
+-- display-safe metadata (last 4 characters, from-address, verification
+-- status). Only the service role (used inside Edge Functions, never the
+-- browser) can ever read the decrypted key back out.
+-- ============================================================================
+
+create table public.vendor_email_settings (
+  vendor_id uuid primary key references public.vendors(id) on delete cascade,
+  secret_id uuid not null, -- points to vault.secrets.id; the real key lives there, not here
+  from_email text not null,
+  from_name text,
+  key_last4 text not null, -- last 4 chars only — lets the UI show "•••• ab12" without ever re-reading the real key
+  verified_at timestamptz, -- set once a test send using this exact key has actually succeeded
+  updated_at timestamptz not null default now()
+);
+
+alter table public.vendor_email_settings enable row level security;
+
+create policy "vendor reads own email settings" on public.vendor_email_settings for select
+  using (public.current_role() = 'vendor' and vendor_id = public.current_vendor_id());
+-- Deliberately NO insert/update/delete policy for authenticated users. All
+-- writes go through the manage-email-settings Edge Function (service role),
+-- so the Vault secret and this metadata row can never drift out of sync —
+-- e.g. a row pointing at a secret_id that's already been deleted.
+
+-- Vault wrapper functions. Supabase Vault's own functions/views (vault.*)
+-- aren't exposed over the REST API, so these thin security-definer
+-- wrappers are what the Edge Function actually calls via .rpc(). Each one
+-- is explicitly revoked from anon/authenticated and granted only to
+-- service_role — a stolen anon key can never use these to read a vendor's
+-- API key, even though the wrapper functions technically live in `public`.
+
+create or replace function public.vault_save_vendor_api_key(p_vendor_id uuid, p_api_key text, p_old_secret_id uuid default null)
+returns uuid
+language plpgsql
+security definer
+set search_path = public, vault
+as $$
+declare
+  v_new_id uuid;
+begin
+  if p_old_secret_id is not null then
+    delete from vault.secrets where id = p_old_secret_id;
+  end if;
+  v_new_id := vault.create_secret(p_api_key, 'vendor_resend_key_' || p_vendor_id::text, 'Resend API key for vendor ' || p_vendor_id::text);
+  return v_new_id;
+end;
+$$;
+revoke all on function public.vault_save_vendor_api_key(uuid, text, uuid) from public, anon, authenticated;
+grant execute on function public.vault_save_vendor_api_key(uuid, text, uuid) to service_role;
+
+create or replace function public.vault_get_secret(p_secret_id uuid)
+returns text
+language sql
+security definer
+set search_path = public, vault
+as $$
+  select decrypted_secret from vault.decrypted_secrets where id = p_secret_id;
+$$;
+revoke all on function public.vault_get_secret(uuid) from public, anon, authenticated;
+grant execute on function public.vault_get_secret(uuid) to service_role;
+
+create or replace function public.vault_delete_secret(p_secret_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public, vault
+as $$
+begin
+  delete from vault.secrets where id = p_secret_id;
+end;
+$$;
+revoke all on function public.vault_delete_secret(uuid) from public, anon, authenticated;
+grant execute on function public.vault_delete_secret(uuid) to service_role;
+
+-- Belt-and-suspenders cleanup: if a vendor_email_settings row is ever
+-- deleted directly (rather than through the Edge Function's 'remove'
+-- action, which already deletes the Vault secret itself), this makes sure
+-- the Vault secret doesn't get orphaned.
+create or replace function public.cleanup_vendor_vault_secret()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, vault
+as $$
+begin
+  delete from vault.secrets where id = old.secret_id;
+  return old;
+end;
+$$;
+create trigger trg_cleanup_vendor_vault_secret
+  before delete on public.vendor_email_settings
+  for each row execute function public.cleanup_vendor_vault_secret();
+
 -- Public, unauthenticated lookup: given a vendor_code, resolve which vendor
 -- it belongs to (id + display name only — nothing sensitive). This is what
 -- lets the delivery-boy login screen validate a vendor code before
